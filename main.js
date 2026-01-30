@@ -1,4 +1,7 @@
 (() => {
+  // --- CONFIGURATION ---
+  const scriptURL = 'https://script.google.com/macros/s/AKfycbwEs2oHCnS6ra6b79Lo02vWKxjoEd7e8a0QcXtRpRS5ze0Ws0yQG683UarCtR5DKGLb/exec';
+
   // DOM Elements
   const qText = document.getElementById('qText'), optionsEl = document.getElementById('options');
   const paginationEl = document.getElementById('pagination'), timerEl = document.getElementById('timer');
@@ -8,38 +11,42 @@
 
   let questions = [], currentIndex = 0, answers = [], started = false, timer = null, remainingSeconds = 0;
 
-  // NEW: Logic to load questions from external JSON or Internal Fallback
+  // 1. Loading Spinner Logic
+  function showSpinner(show) {
+    let spinner = document.getElementById('exam-spinner');
+    if (!spinner) {
+      spinner = document.createElement('div');
+      spinner.id = 'exam-spinner';
+      spinner.innerHTML = `
+        <div class="spinner-overlay">
+          <div class="loader"></div>
+          <p>Securing your results, please wait...</p>
+        </div>`;
+      document.body.appendChild(spinner);
+    }
+    spinner.style.display = show ? 'flex' : 'none';
+  }
+
   async function loadQuestions() {
     try {
-      // Try to fetch external file
       const response = await fetch('questions.json');
       if (!response.ok) throw new Error("File not found");
-      const data = await response.json();
-      console.log("Questions loaded from questions.json");
-      return data;
+      return await response.json();
     } catch (err) {
-      // Fallback to the <script id="sample-questions"> in exam.html
-      console.warn("External questions.json not found, using embedded samples.");
       const embedded = document.getElementById('sample-questions').textContent;
       return JSON.parse(embedded);
     }
   }
 
   async function init() {
-    // Identity Check
     const name = localStorage.getItem('candidateName') || "Guest Candidate";
     const num = localStorage.getItem('examNumber') || "000";
     document.getElementById('candidateHeader').innerHTML = `Candidate: <strong>${name}</strong> | ID: <strong>${num}</strong>`;
-
-    // Load Data
     questions = await loadQuestions();
     answers = Array(questions.length).fill(null);
-    
     buildPagination();
     updateTimerDisplay(parseInt(minsInput.value) * 60);
   }
-
-  // ... (buildPagination and renderQuestion stay the same as previous)
 
   function buildPagination() {
     paginationEl.innerHTML = '';
@@ -57,7 +64,6 @@
     const q = questions[index];
     qText.innerText = `Q${index + 1}. ${q.question}`;
     optionsEl.innerHTML = '';
-
     q.choices.forEach((choice, idx) => {
       const opt = document.createElement('div');
       opt.className = `option ${answers[index] === idx ? 'selected' : ''}`;
@@ -95,28 +101,56 @@
   function updateTimerDisplay(sec) {
     const m = String(Math.floor(sec / 60)).padStart(2, '0');
     const s = String(sec % 60).padStart(2, '0');
-    timerEl.innerText = `${m}:${s}`;
-    document.getElementById('timerAside').innerText = `${m}:${s}`;
+    const timeStr = `${m}:${s}`;
+    timerEl.innerText = timeStr;
+    if(document.getElementById('timerAside')) document.getElementById('timerAside').innerText = timeStr;
     if (sec < 300) timerEl.classList.add('red');
   }
 
-  function endExam() {
+  // --- ENHANCED END EXAM WITH GOOGLE SHEETS & SPINNER ---
+  async function endExam() {
     started = false;
     clearInterval(timer);
+    
+    showSpinner(true); // START SPINNER
+
+    // Data Preparation
+    const name = localStorage.getItem('candidateName');
+    const num = localStorage.getItem('examNumber');
+    let correct = 0;
+    questions.forEach((q, i) => { if (answers[i] === q.answerIndex) correct++; });
+    
+    const examData = {
+      timestamp: new Date().toLocaleString(),
+      name: name,
+      examNumber: num,
+      score: `${correct} / ${questions.length}`,
+      percent: Math.round((correct/questions.length)*100) + "%",
+      timeLeft: timerEl.innerText
+    };
+
+    // Send to Google Sheets
+    try {
+      await fetch(scriptURL, {
+        method: 'POST',
+        mode: 'no-cors',
+        body: JSON.stringify(examData)
+      });
+    } catch (e) {
+      console.error("Sheet Sync Failed", e);
+    }
+
+    // Original UI Display Logic
+    showSpinner(false); // STOP SPINNER
     examArea.classList.add('hidden');
     resultArea.classList.remove('hidden');
 
-    document.getElementById('resName').innerText = localStorage.getItem('candidateName');
-    document.getElementById('resNum').innerText = localStorage.getItem('examNumber');
-
-    let correct = 0;
-    answerKey.innerHTML = ''; // Clear previous results
+    document.getElementById('resName').innerText = name;
+    document.getElementById('resNum').innerText = num;
+    answerKey.innerHTML = ''; 
 
     questions.forEach((q, i) => {
       const isCorrect = (answers[i] === q.answerIndex);
-      if (isCorrect) correct++;
-
-      // Build the Answer Key Review
       const row = document.createElement('div');
       row.className = 'result-row';
       row.innerHTML = `
@@ -129,13 +163,13 @@
       answerKey.appendChild(row);
     });
     
-    document.getElementById('finalScore').innerText = `${correct} / ${questions.length}`;
-    document.getElementById('scorePercent').innerText = `${Math.round((correct/questions.length)*100)}%`;
+    document.getElementById('finalScore').innerText = examData.score;
+    document.getElementById('scorePercent').innerText = examData.percent;
   }
 
   startBtn.onclick = () => {
     started = true;
-    document.getElementById('setupControls').classList.add('hidden');
+    if(document.getElementById('setupControls')) document.getElementById('setupControls').classList.add('hidden');
     examArea.classList.remove('hidden');
     renderQuestion(0);
     startTimer(parseInt(minsInput.value) * 60);
@@ -147,3 +181,4 @@
 
   init();
 })();
+                        
